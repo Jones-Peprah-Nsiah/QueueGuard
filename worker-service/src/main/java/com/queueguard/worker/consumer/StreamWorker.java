@@ -1,14 +1,9 @@
 package com.queueguard.worker.consumer;
 
 import com.queueguard.shared.QueueNames;
-import com.queueguard.worker.persistence.JobHistory;
-import com.queueguard.worker.persistence.JobHistoryRepository;
-import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.connection.stream.Consumer;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.ReadOffset;
@@ -26,18 +21,16 @@ import org.springframework.stereotype.Component;
 @Component
 public class StreamWorker {
 
-    private static final Logger log = LoggerFactory.getLogger(StreamWorker.class);
-
     private static final List<String> SCHEDULE = buildSchedule();
 
     private final StringRedisTemplate redisTemplate;
-    private final JobHistoryRepository jobHistoryRepository;
+    private final JobProcessor jobProcessor;
     private final String consumerName = "worker-" + UUID.randomUUID();
     private final AtomicInteger position = new AtomicInteger(0);
 
-    public StreamWorker(StringRedisTemplate redisTemplate, JobHistoryRepository jobHistoryRepository) {
+    public StreamWorker(StringRedisTemplate redisTemplate, JobProcessor jobProcessor) {
         this.redisTemplate = redisTemplate;
-        this.jobHistoryRepository = jobHistoryRepository;
+        this.jobProcessor = jobProcessor;
     }
 
     private static List<String> buildSchedule() {
@@ -62,28 +55,7 @@ public class StreamWorker {
         }
 
         for (MapRecord<String, Object, Object> record : records) {
-            processRecord(stream, record);
-        }
-    }
-
-    private void processRecord(String stream, MapRecord<String, Object, Object> record) {
-        try {
-            var fields = record.getValue();
-            String jobId = String.valueOf(fields.get("jobId"));
-            String userId = String.valueOf(fields.get("userId"));
-            String tier = String.valueOf(fields.get("tier"));
-
-            JobHistory history = new JobHistory(jobId, userId, tier, "PROCESSING", Instant.now(), 1);
-            jobHistoryRepository.save(history);
-
-            // TODO: replace with actual job execution once there is real work to dispatch.
-            history.setStatus("COMPLETED");
-            history.setProcessedAt(Instant.now());
-            jobHistoryRepository.save(history);
-
-            redisTemplate.opsForStream().acknowledge(stream, QueueNames.CONSUMER_GROUP, record.getId());
-        } catch (Exception e) {
-            log.error("Failed to process record {} on stream {}, leaving unacked for reaper", record.getId(), stream, e);
+            jobProcessor.process(stream, record, consumerName);
         }
     }
 }

@@ -58,8 +58,6 @@ services:
     build:
       context: .
       dockerfile: worker-service/Dockerfile
-    ports:
-      - "8081:8081"
     environment:
       REDIS_HOST: redis
       REDIS_PORT: 6379
@@ -68,6 +66,8 @@ services:
       POSTGRES_DB: queueguard
       POSTGRES_USER: queueguard
       POSTGRES_PASSWORD: queueguard
+      QUEUEGUARD_REAPER_STALE_THRESHOLD_MS: 20000
+      QUEUEGUARD_REAPER_POLL_INTERVAL_MS: 6000
     depends_on:
       redis:
         condition: service_healthy

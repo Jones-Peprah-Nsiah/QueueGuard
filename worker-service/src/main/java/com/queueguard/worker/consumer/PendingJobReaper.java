@@ -2,11 +2,14 @@ package com.queueguard.worker.consumer;
 
 import com.queueguard.shared.QueueNames;
 import java.time.Duration;
+import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Range;
 import org.springframework.data.redis.connection.RedisStreamCommands.XClaimOptions;
+import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.PendingMessage;
 import org.springframework.data.redis.connection.stream.PendingMessages;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -14,24 +17,34 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
- * Sweeps each stream's pending-entries list for jobs claimed by a worker
- * that died before ack'ing, and reassigns them to this reaper's consumer
- * so a live worker picks them back up on its next XREADGROUP.
+ * Sweeps each stream's pending-entries list for jobs claimed by a worker that
+ * died before ack'ing. XCLAIM hands back the message payload directly, so
+ * this reaper drives the reclaimed job through the same JobProcessor path a
+ * live worker would use, rather than just relabeling ownership and leaving
+ * it stuck (Streams only auto-delivers a message once, via XREADGROUP '>',
+ * so a claimed-but-unprocessed message would otherwise never be picked up
+ * by anyone else again).
  */
 @Component
 public class PendingJobReaper {
 
     private static final Logger log = LoggerFactory.getLogger(PendingJobReaper.class);
-    private static final Duration STALE_THRESHOLD = Duration.ofSeconds(30);
 
     private final StringRedisTemplate redisTemplate;
+    private final JobProcessor jobProcessor;
+    private final Duration staleThreshold;
     private final String reaperConsumerName = "reaper-" + UUID.randomUUID();
 
-    public PendingJobReaper(StringRedisTemplate redisTemplate) {
+    public PendingJobReaper(
+            StringRedisTemplate redisTemplate,
+            JobProcessor jobProcessor,
+            @Value("${queueguard.reaper.stale-threshold-ms:30000}") long staleThresholdMillis) {
         this.redisTemplate = redisTemplate;
+        this.jobProcessor = jobProcessor;
+        this.staleThreshold = Duration.ofMillis(staleThresholdMillis);
     }
 
-    @Scheduled(fixedDelay = 30000)
+    @Scheduled(fixedDelayString = "${queueguard.reaper.poll-interval-ms:30000}")
     public void reclaimStaleJobs() {
         reclaim(QueueNames.PREMIUM_STREAM);
         reclaim(QueueNames.FREE_STREAM);
@@ -46,14 +59,20 @@ public class PendingJobReaper {
         }
 
         for (PendingMessage message : pending) {
-            if (message.getElapsedTimeSinceLastDelivery().compareTo(STALE_THRESHOLD) > 0) {
-                redisTemplate.opsForStream().claim(
+            if (message.getElapsedTimeSinceLastDelivery().compareTo(staleThreshold) > 0) {
+                log.warn("Reclaiming stale job {} on stream {} (idle {}, previously owned by {})",
+                        message.getIdAsString(), stream, message.getElapsedTimeSinceLastDelivery(),
+                        message.getConsumerName());
+
+                List<MapRecord<String, Object, Object>> claimed = redisTemplate.opsForStream().claim(
                         stream,
                         QueueNames.CONSUMER_GROUP,
                         reaperConsumerName,
-                        XClaimOptions.minIdle(STALE_THRESHOLD).ids(message.getIdAsString()));
-                log.warn("Reclaimed stale job {} on stream {} (idle {})",
-                        message.getIdAsString(), stream, message.getElapsedTimeSinceLastDelivery());
+                        XClaimOptions.minIdle(staleThreshold).ids(message.getIdAsString()));
+
+                for (MapRecord<String, Object, Object> record : claimed) {
+                    jobProcessor.process(stream, record, reaperConsumerName);
+                }
             }
         }
     }
