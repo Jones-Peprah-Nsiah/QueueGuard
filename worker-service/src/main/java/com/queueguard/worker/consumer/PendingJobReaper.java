@@ -51,8 +51,18 @@ public class PendingJobReaper {
     }
 
     private void reclaim(String stream) {
-        PendingMessages pending = redisTemplate.opsForStream()
-                .pending(stream, QueueNames.CONSUMER_GROUP, Range.unbounded(), 50);
+        PendingMessages pending;
+        try {
+            pending = redisTemplate.opsForStream()
+                    .pending(stream, QueueNames.CONSUMER_GROUP, Range.unbounded(), 50);
+        } catch (Exception e) {
+            // Stream or consumer group doesn't exist yet (e.g. no job has ever
+            // been enqueued on it, or Redis lost state under the running JVM).
+            // One stream being unavailable shouldn't stop the other from being
+            // checked, so log and move on rather than letting this propagate.
+            log.debug("Could not check pending entries for stream {}: {}", stream, e.toString());
+            return;
+        }
 
         if (pending == null || pending.isEmpty()) {
             return;

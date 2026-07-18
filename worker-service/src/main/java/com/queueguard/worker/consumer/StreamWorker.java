@@ -41,7 +41,7 @@ public class StreamWorker {
                 .toList();
     }
 
-    @Scheduled(fixedDelay = 200)
+    @Scheduled(fixedDelayString = "${queueguard.worker.poll-interval-ms:200}")
     public void pollOnce() {
         String stream = SCHEDULE.get(position.getAndUpdate(i -> (i + 1) % SCHEDULE.size()));
 

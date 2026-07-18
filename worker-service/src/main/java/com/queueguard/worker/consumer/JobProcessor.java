@@ -6,6 +6,7 @@ import com.queueguard.worker.persistence.JobHistoryRepository;
 import java.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
@@ -20,14 +21,18 @@ import org.springframework.stereotype.Component;
 public class JobProcessor {
 
     private static final Logger log = LoggerFactory.getLogger(JobProcessor.class);
-    static final long SIMULATED_WORK_MILLIS = 15000;
 
     private final StringRedisTemplate redisTemplate;
     private final JobHistoryRepository jobHistoryRepository;
+    private final long simulatedWorkMillis;
 
-    public JobProcessor(StringRedisTemplate redisTemplate, JobHistoryRepository jobHistoryRepository) {
+    public JobProcessor(
+            StringRedisTemplate redisTemplate,
+            JobHistoryRepository jobHistoryRepository,
+            @Value("${queueguard.worker.simulated-work-ms:15000}") long simulatedWorkMillis) {
         this.redisTemplate = redisTemplate;
         this.jobHistoryRepository = jobHistoryRepository;
+        this.simulatedWorkMillis = simulatedWorkMillis;
     }
 
     public void process(String stream, MapRecord<String, Object, Object> record, String ownerLabel) {
@@ -51,7 +56,7 @@ public class JobProcessor {
             // TODO: replace with actual job execution once there is real work to dispatch.
             // Simulated delay stands in for that work so a worker crash/kill during
             // processing leaves a genuinely reclaimable pending entry to demonstrate.
-            Thread.sleep(SIMULATED_WORK_MILLIS);
+            Thread.sleep(simulatedWorkMillis);
 
             history.setStatus("COMPLETED");
             history.setProcessedAt(Instant.now());
