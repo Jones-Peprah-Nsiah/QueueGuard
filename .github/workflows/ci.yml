@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # Includes the Testcontainers-backed integration tests (real Redis +
+      # Postgres) since this project runs them via Surefire rather than a
+      # separate Failsafe/verify phase. GitHub-hosted runners have Docker
+      # available out of the box, so no extra setup is needed for that.
+      - name: Run tests
+        run: mvn -B test
+
+      - name: Package
+        run: mvn -B package -DskipTests
+
+      - name: Build api-service Docker image
+        run: docker build -f api-service/Dockerfile -t queueguard-api-service:${{ github.sha }} .
+
+      - name: Build worker-service Docker image
+        run: docker build -f worker-service/Dockerfile -t queueguard-worker-service:${{ github.sha }} .
