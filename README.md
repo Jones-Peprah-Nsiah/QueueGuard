@@ -110,6 +110,23 @@ Manually crash-testing the worker pool (kill a container mid-job, watch what hap
 2. **A stale-threshold shorter than actual processing time caused duplicate concurrent processing.** With the threshold below the simulated job duration, three separate workers reclaimed and reprocessed the *same* in-flight job before one of them finally acked it — a classic at-least-once-delivery pitfall. Fixed by requiring the threshold to exceed worst-case processing time, and it's now enforced implicitly by `PendingJobReaperTest`.
 3. **The rate limiter and the queue have no backpressure between them.** The k6 throughput run admitted and enqueued ~517,000 jobs in about a minute — all correctly, each caller was under its own per-user limit. But at 2 workers processing roughly one job per 15 simulated-work seconds each, that backlog would take *weeks* to drain. Admission control here only checks the caller's own rate limit, not whether the queue is already saturated, so a client can be legitimately "allowed" to enqueue work that won't be processed for a very long time. Not fixed — noted as the next real architectural gap to close (options: reject or shed load past a queue-depth threshold, expose queue depth so callers can back off, or make processing fast enough that it doesn't matter for real workloads).
 
+## AWS deployment 
+
+
+
+| Local (Docker Compose) | Planned on AWS | Why |
+|---|---|---|
+| `redis` container | Amazon ElastiCache for Redis | Rate-limit state and the job Streams live here, so a restart must not wipe them; container tasks are ephemeral by default |
+| `postgres` container | Amazon RDS for PostgreSQL | `job_history` is the durable record of every job and shouldn't depend on a container's lifecycle |
+| `api-service` / `worker-service` containers | ECS Fargate services, or EKS (orchestrator not decided) | Both services are stateless and already containerized; workers scale by adding replicas to the same consumer group |
+| Port mapping on `:8080` | Application Load Balancer in front of `api-service` | Health checks can point at the existing `/actuator/health` endpoint |
+| Local image build | Image push to Amazon ECR from CI | The CI workflow already builds both images; it doesn't push them yet |
+| Prometheus + Grafana containers | CloudWatch, or managed Prometheus/Grafana | Metrics are already exposed at `/actuator/prometheus` |
+
+Settings that must be carried over as environment variables rather than baked in: Redis and Postgres endpoints and credentials (from Secrets Manager, not the plaintext values used in `docker-compose.yml`), and the worker timing settings. In particular the reaper's stale-threshold must stay above worst-case job duration, or the duplicate-processing bug described above comes back.
+
+Still to do before this is real: an ECR push step in CI, task definitions or Kubernetes manifests, infrastructure-as-code for the managed Redis and Postgres, and an actual deployment that's been verified end to end. None of that is claimed as done.
+
 ## Status
 
 **Done and verified** (not just written — exercised against real Redis/Postgres, real concurrent load, and a real crashed worker): sliding-window rate limiter, Streams + consumer groups, weighted premium/free scheduling, crash recovery via the reaper, Testcontainers test suite, k6 load test, GitHub Actions CI (green on GitHub's own infrastructure, not just locally), Swagger UI.
